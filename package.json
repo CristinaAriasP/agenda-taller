@@ -1,0 +1,15 @@
+{
+  "name": "agenda-taller",
+  "private": true,
+  "description": "Taller: agenda de estudio (calendario, tareas y máster) con sincronización entre dispositivos.",
+  "scripts": {
+    "build": "esbuild src/sync.js --bundle --format=esm --minify --target=es2020 --outfile=public/sync.bundle.js",
+    "serve": "npx --yes http-server public -p 8765 -c-1",
+    "deploy": "firebase deploy --only hosting"
+  },
+  "devDependencies": {
+    "esbuild": "0.23.1",
+    "firebase": "10.14.1",
+    "firebase-tools": "13.29.1"
+  }
+}
