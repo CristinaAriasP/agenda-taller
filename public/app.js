@@ -203,11 +203,10 @@ function startSync() {
   }).catch(err => { console.error('[Taller] no se pudo cargar la sincronización', err); syncStatusChanged('unavailable', null); });
 }
 
-let ui = { view: 'hoy', weekStart: null, selDay: null, taskStatus: 'pending', taskCat: 'all', theme: 'auto' };
+let ui = { view: 'hoy', calMode: 'semana', selDay: null, taskStatus: 'pending', taskCat: 'all', theme: 'auto' };
 try { Object.assign(ui, JSON.parse(localStorage.getItem(UI_KEY) || '{}')); } catch (e) {}
-ui.weekStart = toKey(startOfWeek(new Date()));
 ui.selDay = todayKey();
-const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify({ view: ui.view, taskStatus: ui.taskStatus, taskCat: ui.taskCat, theme: ui.theme })); } catch (e) {} };
+const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify({ view: ui.view, calMode: ui.calMode, taskStatus: ui.taskStatus, taskCat: ui.taskCat, theme: ui.theme })); } catch (e) {} };
 
 function applyTheme() {
   if (ui.theme === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -385,18 +384,83 @@ function renderHoy() {
 }
 
 function renderCal() {
-  const ws = parseKey(ui.weekStart);
-  const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(ws, i)));
   const tk = todayKey();
-  if (!days.includes(ui.selDay)) ui.selDay = days.includes(tk) ? tk : days[0];
-  const end = days[6];
-  const sameMonth = parseKey(days[0]).getMonth() === parseKey(end).getMonth();
-  const range = sameMonth
-    ? `${parseKey(days[0]).getDate()} – ${fmt(end, { day: 'numeric', month: 'long', year: 'numeric' })}`
-    : `${fmtShort(days[0])} – ${fmt(end, { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '')}`;
-  const data = days.map(itemsForDate);
+  const mode = ['dia', 'semana', 'mes'].includes(ui.calMode) ? ui.calMode : 'semana';
+  const sel = ui.selDay || tk;
+  const selD = parseKey(sel);
+  const yearSuffix = k => parseKey(k).getFullYear() !== new Date().getFullYear() ? ` ${parseKey(k).getFullYear()}` : '';
 
-  // horas visibles
+  let title, body = '';
+  if (mode === 'dia') {
+    title = cap(fmt(sel, { weekday: 'long', day: 'numeric', month: 'long' })) + yearSuffix(sel);
+    body = timeGrid([sel], { cls: '' });
+  } else if (mode === 'semana') {
+    const days = Array.from({ length: 7 }, (_, i) => toKey(addDays(startOfWeek(selD), i)));
+    const end = days[6];
+    const sameMonth = parseKey(days[0]).getMonth() === parseKey(end).getMonth();
+    title = sameMonth
+      ? `${parseKey(days[0]).getDate()} – ${fmt(end, { day: 'numeric', month: 'long', year: 'numeric' })}`
+      : `${fmtShort(days[0])} – ${fmt(end, { day: 'numeric', month: 'short', year: 'numeric' }).replace('.', '')}`;
+    body = timeGrid(days, { cls: 'desktop-only' }) + `
+      <div class="mobile-only">
+        <div class="daystrip">${days.map((k, i) => {
+          const d = itemsForDate(k);
+          const cats = [...new Set([...d.allday, ...d.timed].map(x => x.cat))].slice(0, 4);
+          return `<button class="daybtn ${k === sel ? 'sel' : ''} ${k === tk ? 'today' : ''}" data-sel="${k}">
+            <span class="dname">${DAY_LETTER[i]}</span><span class="dnum">${parseKey(k).getDate()}</span>
+            <span class="dots">${cats.map(c => `<i data-cat="${c}"></i>`).join('')}</span></button>`;
+        }).join('')}</div>
+        ${dayListCard(sel)}
+      </div>`;
+  } else {
+    title = cap(selD.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }));
+    body = monthGrid(selD) + `<div class="mobile-only" style="margin-top:12px">${dayListCard(sel)}</div>`;
+  }
+
+  view.innerHTML = `
+    <div class="view-head">
+      <div><div class="eyebrow">Calendario</div><h1>${esc(title)}</h1></div>
+      <div class="cal-nav">
+        <div class="chips seg-mode" role="group" aria-label="Vista">
+          ${[['dia', 'Día'], ['semana', 'Semana'], ['mes', 'Mes']].map(([v, n]) =>
+            `<button class="chip ${mode === v ? 'on' : ''}" data-calmode="${v}" aria-pressed="${mode === v}">${n}</button>`).join('')}
+        </div>
+        <span class="nav-arrows">
+          <button class="icon-btn" data-nav="-1" aria-label="Anterior">${ICON.left}</button>
+          <button class="btn" data-nav="0">Hoy</button>
+          <button class="icon-btn" data-nav="1" aria-label="Siguiente">${ICON.right}</button>
+        </span>
+      </div>
+    </div>
+    <div class="toolbar">
+      <div class="legend">${CATS.map(c => `<span data-cat="${c.id}"><i class="dot"></i>${c.name}</span>`).join('')}</div>
+      <div class="chips"><button class="btn small" data-action="new-class">${ICON.plus} Horario fijo</button><button class="btn small" data-action="new-event">${ICON.plus} Entrega / evento</button></div>
+    </div>
+    ${body}
+    <p class="hint desktop-only" style="margin-top:10px">${mode === 'mes'
+      ? 'Consejo: pulsa el número de un día para verlo en detalle, o un hueco para añadir algo ese día.'
+      : 'Consejo: haz clic en un hueco del calendario para añadir algo a esa hora.'}</p>`;
+
+  const wb = $('#weekBody');
+  if (wb && !renderCal.scrolled) {
+    wb.scrollTop = Math.max(0, (renderCal.firstMin - renderCal.minH * 60) / 60 * HOUR_H - 12);
+    renderCal.scrolled = true;
+  }
+}
+
+function dayListCard(k) {
+  const d = itemsForDate(k);
+  const list = [...d.allday, ...d.timed];
+  return `<section class="card">
+    <div class="card-head"><h2>${esc(cap(fmt(k, { weekday: 'long', day: 'numeric', month: 'long' })))}</h2><button class="btn small" data-action="new-on-day">${ICON.plus} Añadir</button></div>
+    <div class="list">${list.length ? list.map(it => agendaRow(it).replace('Para hoy', 'Tarea')).join('') : '<div class="empty">Día libre.</div>'}</div>
+  </section>`;
+}
+
+// Rejilla con horas para uno o varios días (vista día y semana)
+function timeGrid(days, { cls }) {
+  const tk = todayKey();
+  const data = days.map(itemsForDate);
   let minH = 8, maxH = 21;
   data.forEach(d => d.timed.forEach(it => {
     minH = Math.min(minH, Math.floor(toMin(it.start) / 60));
@@ -404,76 +468,73 @@ function renderCal() {
   }));
   maxH = Math.min(24, maxH);
   const hours = Array.from({ length: maxH - minH }, (_, i) => minH + i);
+  renderCal.minH = minH;
+  renderCal.firstMin = Math.min(...data.flatMap(d => d.timed.map(it => toMin(it.start))), 9 * 60);
 
-  const head = `<div></div>` + days.map((k, i) => `<div class="${k === tk ? 'today' : ''}"><div class="dname">${DAY_SHORT[i]}</div><div class="dnum">${parseKey(k).getDate()}</div></div>`).join('');
+  const single = days.length === 1;
+  const head = `<div></div>` + days.map(k => `<div class="${k === tk ? 'today' : ''}"><div class="dname">${DAY_SHORT[dayIdx(parseKey(k))]}</div><div class="dnum">${parseKey(k).getDate()}</div></div>`).join('');
   const allday = `<div>todo<br>el día</div>` + days.map((k, i) => `<div data-slot="${k}">${data[i].allday.map(it =>
     `<button class="pill ${it.kind === 'task' ? 'soft' : ''}" data-cat="${it.cat}" data-open="${it.kind}:${it.id}" title="${esc(it.title)}">${it.kind === 'task' ? '☐ ' : ''}${esc(it.title)}</button>`).join('')}</div>`).join('');
 
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const cols = days.map((k, i) => {
-    const laid = layout(data[i].timed);
-    const evs = laid.map(({ it, lane, lanes }) => {
+    const evs = layout(data[i].timed).map(({ it, lane, lanes }) => {
       const s = toMin(it.start), e = toMin(it.end) ?? s + 60;
       const top = (s - minH * 60) / 60 * HOUR_H;
       const hgt = Math.max(22, (e - s) / 60 * HOUR_H - 2);
       const w = 100 / lanes;
+      const sub = it.kind === 'class' ? it.sub : it.kind === 'event' ? (it.ref.notes || '') : '';
       return `<button class="ev" data-cat="${it.cat}" data-open="${it.kind}:${it.id}" style="top:${top}px;height:${hgt}px;left:calc(${w * lane}% + 3px);right:auto;width:calc(${w}% - 6px)">
-        <b>${it.kind === 'event' && it.type !== 'evento' ? esc(TYPE_NAME[it.type]) + ' · ' : ''}${esc(it.title)}</b><span>${esc(timeLabel(it))}</span>${hgt > 50 && it.sub && it.kind === 'class' ? `<span>${esc(it.sub)}</span>` : ''}</button>`;
+        <b>${it.kind === 'event' && it.type !== 'evento' ? esc(TYPE_NAME[it.type]) + ' · ' : ''}${esc(it.title)}</b><span>${esc(timeLabel(it))}</span>${hgt > 50 && sub && (single || it.kind === 'class') ? `<span class="ev-sub">${esc(sub)}</span>` : ''}</button>`;
     }).join('');
     const nowM = k === tk && nowMin >= minH * 60 && nowMin <= maxH * 60 ? `<div class="nowmark" style="top:${(nowMin - minH * 60) / 60 * HOUR_H}px"></div>` : '';
-    return `<div class="daycol ${k === tk ? 'today' : ''}" data-col="${k}" style="height:${hours.length * HOUR_H}px">${evs}${nowM}</div>`;
+    return `<div class="daycol ${k === tk && !single ? 'today' : ''}" data-col="${k}" style="height:${hours.length * HOUR_H}px">${evs}${nowM}</div>`;
   }).join('');
 
-  const sel = ui.selDay;
-  const sd = itemsForDate(sel);
-  const selList = [...sd.allday, ...sd.timed];
-
-  view.innerHTML = `
-    <div class="view-head">
-      <div><div class="eyebrow">Calendario</div><h1>${esc(range)}</h1></div>
-      <div class="cal-nav">
-        <button class="icon-btn" data-week="-1" aria-label="Semana anterior">${ICON.left}</button>
-        <button class="btn" data-week="0">Hoy</button>
-        <button class="icon-btn" data-week="1" aria-label="Semana siguiente">${ICON.right}</button>
-      </div>
-    </div>
-    <div class="toolbar">
-      <div class="legend">${CATS.map(c => `<span data-cat="${c.id}"><i class="dot"></i>${c.name}</span>`).join('')}</div>
-      <div class="chips"><button class="btn small" data-action="new-class">${ICON.plus} Horario fijo</button><button class="btn small" data-action="new-event">${ICON.plus} Entrega / evento</button></div>
-    </div>
-
-    <div class="week desktop-only">
-      <div class="week-head">${head}</div>
+  return `<div class="week ${single ? 'single' : ''} ${cls}" style="--n:${days.length}">
+      ${single ? '' : `<div class="week-head">${head}</div>`}
       <div class="week-allday">${allday}</div>
       <div class="week-body" id="weekBody">
         <div class="hours">${hours.map(h => `<div>${pad(h)}:00</div>`).join('')}</div>
         ${cols}
       </div>
-    </div>
+    </div>`;
+}
 
-    <div class="mobile-only">
-      <div class="daystrip">${days.map((k, i) => {
-        const d = data[i];
-        const cats = [...new Set([...d.allday, ...d.timed].map(x => x.cat))].slice(0, 4);
-        return `<button class="daybtn ${k === sel ? 'sel' : ''} ${k === tk ? 'today' : ''}" data-sel="${k}">
-          <span class="dname">${DAY_LETTER[i]}</span><span class="dnum">${parseKey(k).getDate()}</span>
-          <span class="dots">${cats.map(c => `<i data-cat="${c}"></i>`).join('')}</span></button>`;
-      }).join('')}</div>
-      <section class="card">
-        <div class="card-head"><h2>${esc(cap(fmt(sel, { weekday: 'long', day: 'numeric', month: 'long' })))}</h2><button class="btn small" data-action="new-on-day">${ICON.plus} Añadir</button></div>
-        <div class="list">${selList.length ? selList.map(it => agendaRow(it).replace('Para hoy', 'Tarea')).join('') : '<div class="empty">Día libre.</div>'}</div>
-      </section>
-    </div>
-    <p class="hint desktop-only" style="margin-top:10px">Consejo: haz clic en un hueco del calendario para añadir algo a esa hora.</p>`;
-
-  const wb = $('#weekBody');
-  if (wb && !renderCal.scrolled) {
-    const first = Math.min(...data.flatMap(d => d.timed.map(it => toMin(it.start))), 9 * 60);
-    wb.scrollTop = Math.max(0, (first - minH * 60) / 60 * HOUR_H - 12);
-    renderCal.scrolled = true;
+// Mes completo
+function monthGrid(selD) {
+  const tk = todayKey();
+  const sel = toKey(selD);
+  const first = new Date(selD.getFullYear(), selD.getMonth(), 1);
+  const last = new Date(selD.getFullYear(), selD.getMonth() + 1, 0);
+  const start = startOfWeek(first);
+  const weeks = Math.ceil((dayIdx(first) + last.getDate()) / 7);
+  const rank = it => it.kind === 'milestone' || (it.kind === 'event' && it.type !== 'evento') ? 0 : it.kind === 'event' ? 1 : it.kind === 'task' ? 2 : 3;
+  const MAX = 3;
+  let cells = '';
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = addDays(start, i), k = toKey(d);
+    const { timed, allday } = itemsForDate(k);
+    const items = [...allday, ...timed].sort((a, b) => rank(a) - rank(b));
+    const pills = items.slice(0, MAX).map(it => {
+      const solid = rank(it) === 0;
+      const label = (it.start && it.kind !== 'task' ? `<span class="mt-time">${it.start}</span> ` : it.kind === 'task' ? '☐ ' : '') + esc(it.title);
+      return `<button class="pill ${solid ? '' : 'soft'}" data-cat="${it.cat}" data-open="${it.kind}:${it.id}" title="${esc(it.title)}">${label}</button>`;
+    }).join('');
+    const more = items.length > MAX ? `<button class="more" data-goday="${k}">+${items.length - MAX} más</button>` : '';
+    const cats = [...new Set(items.filter(it => it.kind !== 'class').map(x => x.cat))].slice(0, 3);
+    const hasClass = items.some(it => it.kind === 'class');
+    cells += `<div class="mcell ${d.getMonth() !== selD.getMonth() ? 'out' : ''} ${k === tk ? 'today' : ''} ${k === sel ? 'sel' : ''}" data-mday="${k}">
+      <button class="mnum" data-goday="${k}" aria-label="${esc(fmt(k, { weekday: 'long', day: 'numeric', month: 'long' }))}">${d.getDate()}</button>
+      <div class="mitems desktop-only">${pills}${more}</div>
+      <div class="mdots mobile-only">${cats.map(c => `<i data-cat="${c}"></i>`).join('')}${hasClass && !cats.length ? '<i class="cls"></i>' : ''}</div>
+    </div>`;
   }
-  renderCal.minH = minH;
+  return `<div class="month">
+    <div class="month-head">${DAY_SHORT.map(n => `<div>${n}</div>`).join('')}</div>
+    <div class="month-grid">${cells}</div>
+  </div>`;
 }
 
 // reparte eventos solapados en carriles
@@ -858,6 +919,8 @@ function findOpen(spec) {
   }
 }
 
+const isMobile = () => window.matchMedia('(max-width: 719px)').matches;
+
 function go(v) {
   ui.view = v; saveUI(); renderCal.scrolled = false;
   render(); window.scrollTo(0, 0);
@@ -897,12 +960,32 @@ document.addEventListener('click', e => {
   }
   const op = t.closest('[data-open]'); if (op && !modal.open) return findOpen(op.dataset.open);
 
-  const wk = t.closest('[data-week]');
-  if (wk) {
-    const n = Number(wk.dataset.week);
-    ui.weekStart = n === 0 ? toKey(startOfWeek(new Date())) : toKey(addDays(parseKey(ui.weekStart), 7 * n));
-    ui.selDay = n === 0 ? todayKey() : ui.weekStart;
+  const nv = t.closest('[data-nav]');
+  if (nv) {
+    const n = Number(nv.dataset.nav);
+    const d = parseKey(ui.selDay || todayKey());
+    if (n === 0) ui.selDay = todayKey();
+    else if (ui.calMode === 'dia') ui.selDay = toKey(addDays(d, n));
+    else if (ui.calMode === 'mes') {
+      const m = new Date(d.getFullYear(), d.getMonth() + n, 1);
+      const now = new Date();
+      ui.selDay = m.getFullYear() === now.getFullYear() && m.getMonth() === now.getMonth() ? todayKey() : toKey(m);
+    }
+    else ui.selDay = toKey(addDays(d, 7 * n));
     renderCal.scrolled = false; return render();
+  }
+  const cm = t.closest('[data-calmode]');
+  if (cm) { ui.calMode = cm.dataset.calmode; saveUI(); renderCal.scrolled = false; return render(); }
+  const gd = t.closest('[data-goday]');
+  if (gd) {
+    ui.selDay = gd.dataset.goday;
+    if (!(ui.calMode === 'mes' && isMobile())) { ui.calMode = 'dia'; saveUI(); renderCal.scrolled = false; }
+    return render();
+  }
+  const mc = t.closest('[data-mday]');
+  if (mc) {
+    if (isMobile()) { ui.selDay = mc.dataset.mday; return render(); }
+    return openChooser({ date: mc.dataset.mday });
   }
   const sd = t.closest('[data-sel]'); if (sd) { ui.selDay = sd.dataset.sel; return render(); }
   const st = t.closest('[data-status]'); if (st) { ui.taskStatus = st.dataset.status; saveUI(); return render(); }
