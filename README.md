@@ -28,6 +28,15 @@ npm run serve      # http://localhost:8765
 
 ## Publicar
 
+Se publica sola: cada cambio que llega a `main` dentro de `public/` lo despliega
+GitHub Actions (`.github/workflows/deploy.yml`) en Firebase Hosting. También se
+puede lanzar a mano desde la pestaña Actions → "Publicar en Firebase Hosting" → Run workflow.
+
+Necesita el secreto `FIREBASE_SERVICE_ACCOUNT_TALLER_AGENDA_94C60` en el repositorio
+(se crea una vez con `npx firebase init hosting:github`).
+
+Publicar a mano desde el ordenador:
+
 ```bash
 npx firebase login
 npm run deploy
