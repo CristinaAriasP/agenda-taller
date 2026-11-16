@@ -1,5 +1,5 @@
 // Service worker: permite abrir Taller sin conexión.
-const CACHE = 'taller-v2';
+const CACHE = 'taller-v3';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'firebase-config.js', 'sync.bundle.js', 'icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', e => {

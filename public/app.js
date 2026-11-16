@@ -203,10 +203,50 @@ function startSync() {
   }).catch(err => { console.error('[Taller] no se pudo cargar la sincronización', err); syncStatusChanged('unavailable', null); });
 }
 
-let ui = { view: 'hoy', calMode: 'semana', selDay: null, taskStatus: 'pending', taskCat: 'all', theme: 'auto' };
+let ui = { view: 'hoy', calMode: 'semana', selDay: null, taskStatus: 'pending', taskCat: 'all', uniStatus: 'pending', theme: 'auto', bg: 'grid' };
 try { Object.assign(ui, JSON.parse(localStorage.getItem(UI_KEY) || '{}')); } catch (e) {}
 ui.selDay = todayKey();
-const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify({ view: ui.view, calMode: ui.calMode, taskStatus: ui.taskStatus, taskCat: ui.taskCat, theme: ui.theme })); } catch (e) {} };
+const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify({ view: ui.view, calMode: ui.calMode, taskStatus: ui.taskStatus, taskCat: ui.taskCat, uniStatus: ui.uniStatus, theme: ui.theme, bg: ui.bg })); } catch (e) {} };
+
+/* ---------------- Fondo de la página ---------------- */
+// La imagen propia se guarda solo en este dispositivo (no se sincroniza).
+const BG_IMG_KEY = 'taller.bgImage';
+function getBgImage() { try { return localStorage.getItem(BG_IMG_KEY); } catch (e) { return null; } }
+function applyBg() {
+  const img = ui.bg === 'image' ? getBgImage() : null;
+  const mode = ui.bg === 'image' && !img ? 'grid' : (['grid', 'plain', 'image'].includes(ui.bg) ? ui.bg : 'grid');
+  document.documentElement.setAttribute('data-bg', mode);
+  if (img) document.documentElement.style.setProperty('--bg-image', `url("${img}")`);
+  else document.documentElement.style.removeProperty('--bg-image');
+}
+// Reduce la foto (máx. 1920 px, JPEG) para que quepa en el almacenamiento del navegador.
+function imageToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      let q = 0.82, out = c.toDataURL('image/jpeg', q);
+      while (out.length > 2500000 && q > 0.4) { q -= 0.12; out = c.toDataURL('image/jpeg', q); }
+      resolve(out);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('imagen')); };
+    img.src = url;
+  });
+}
+function bgFieldHTML() {
+  const has = !!getBgImage();
+  return `<div class="chips">${[['grid', 'Cuadrícula'], ['plain', 'Liso'], ['image', 'Imagen']].map(([v, n]) =>
+      `<button type="button" class="chip ${ui.bg === v && (v !== 'image' || has) ? 'on' : ''}" data-bg-set="${v}">${n}</button>`).join('')}</div>
+    ${has ? `<div class="bg-preview" style="background-image:url(&quot;${getBgImage()}&quot;)"></div>
+      <div class="chips"><button type="button" class="btn small" data-action="bg-change">Cambiar imagen</button><button type="button" class="btn small danger" data-action="bg-remove">Quitar imagen</button></div>` : ''}
+    <p class="hint">La cuadrícula es el fondo por defecto. La imagen se guarda solo en este dispositivo.</p>`;
+}
+function refreshBgField() { const box = document.getElementById('bgBox'); if (box) box.innerHTML = bgFieldHTML(); }
 
 function applyTheme() {
   if (ui.theme === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -244,7 +284,7 @@ function upcomingDeadlines(days = 45) {
   const tk = todayKey();
   const out = [];
   for (const e of state.events) {
-    if (e.type === 'evento') continue;
+    if (e.type === 'evento' || e.done) continue;
     const n = diffDays(tk, e.date);
     if (n >= 0 && n <= days) out.push({ kind: 'event', ref: e, title: e.title, cat: e.cat, date: e.date, label: TYPE_NAME[e.type], n });
   }
@@ -271,6 +311,7 @@ const ICON = {
 };
 
 function timeLabel(it) {
+  if (it.kind === 'event' && it.type === 'entrega') return it.start ? `hasta ${it.start}` : 'Todo el día';
   if (!it.start) return 'Todo el día';
   return it.end ? `${it.start}–${it.end}` : it.start;
 }
@@ -323,7 +364,8 @@ function render() {
     b.classList.toggle('active', on);
     b.setAttribute('aria-current', on ? 'page' : 'false');
   });
-  ({ hoy: renderHoy, calendario: renderCal, tareas: renderTasks, master: renderMaster })[ui.view]();
+  const views = { hoy: renderHoy, calendario: renderCal, tareas: renderTasks, uni: renderUni, master: renderMaster };
+  (views[ui.view] || renderHoy)();
 }
 
 function renderHoy() {
@@ -374,7 +416,7 @@ function renderHoy() {
       </div>
       <div class="stack">
         <section class="card"><div class="card-head"><h2>Próximas entregas</h2><span class="eyebrow">45 días</span></div>
-          <div class="list">${deadlines.length ? deadlines.slice(0, 6).map(deadlineRow).join('') : '<div class="empty"><strong>Sin entregas a la vista</strong>Añádelas desde el calendario con el botón +.</div>'}</div></section>
+          <div class="list">${deadlines.length ? deadlines.slice(0, 6).map(deadlineRow).join('') : '<div class="empty"><strong>Sin entregas a la vista</strong>Añádelas desde Uni o desde el calendario con el botón +.</div>'}</div></section>
         <section class="card"><div class="card-head"><h2>Tareas de hoy</h2><button class="btn ghost small" data-goto="tareas">Todas ${ICON.right}</button></div>
           ${dueTasks.length ? dueTasks.map(taskRow).join('') : '<div class="empty">Todo al día ✓</div>'}
           ${soonTasks.length ? `<div class="group-label">Próximos días</div>${soonTasks.map(taskRow).join('')}` : ''}
@@ -611,6 +653,84 @@ function renderTasks() {
     <section class="card">${body}</section>`;
 }
 
+// Una entrega o examen de la uni, con cuenta atrás
+function uniRow(e) {
+  const tk = todayKey();
+  const n = diffDays(tk, e.date);
+  const isEntrega = e.type === 'entrega';
+  const late = isEntrega && !e.done && n < 0;
+  const big = e.done ? '✓' : n === 0 ? 'HOY' : Math.abs(n);
+  const small = e.done ? (isEntrega ? 'hecha' : '') : n === 0 ? '' : n < 0 ? (isEntrega ? 'tarde' : 'pasado') : n === 1 ? 'día' : 'días';
+  const when = cap(fmt(e.date, { weekday: 'short', day: 'numeric', month: 'short' })) + (e.start ? (isEntrega ? ` · hasta las ${e.start}` : ` · ${e.start}${e.end ? '–' + e.end : ''}`) : '');
+  return `<div class="uni-row ${e.done ? 'done' : ''}" data-cat="uni">
+    ${isEntrega ? `<button class="check ${e.done ? 'on' : ''}" data-toggle-ev="${e.id}" aria-label="${e.done ? 'Marcar como pendiente' : 'Marcar como entregada'}">${ICON.check}</button>` : '<span class="check-gap"></span>'}
+    <button class="deadline" data-open="event:${e.id}">
+      <span class="count ${!e.done && n >= 0 && n <= 3 ? 'urgent' : ''} ${late ? 'late' : ''}"><b>${big}</b><small>${small}</small></span>
+      <span class="body"><span class="title">${esc(e.title)}</span>
+        <span class="meta"><span class="tag ${isEntrega ? 'solid' : ''}">${esc(TYPE_NAME[e.type])}</span>${e.subject ? `<span>${esc(e.subject)}</span><span>·</span>` : ''}<span class="${late ? 'late' : ''}">${esc(when)}</span></span>
+        ${e.notes ? `<span class="uni-notes">${esc(e.notes)}</span>` : ''}</span>
+    </button>
+  </div>`;
+}
+
+function renderUni() {
+  const tk = todayKey();
+  const sortFn = (a, b) => a.date.localeCompare(b.date) || (a.start || '99').localeCompare(b.start || '99');
+  const items = state.events.filter(e => e.cat === 'uni' && (e.type === 'entrega' || e.type === 'examen'));
+  // Pendiente: entregas sin entregar (aunque se hayan pasado) y exámenes que aún no han llegado
+  const isPending = e => e.type === 'entrega' ? !e.done : e.date >= tk;
+  const pending = items.filter(isPending).sort(sortFn);
+  const past = items.filter(e => !isPending(e)).sort((a, b) => sortFn(b, a));
+  const status = ui.uniStatus === 'done' ? 'done' : 'pending';
+
+  let body = '';
+  if (status === 'pending') {
+    const groups = [
+      { label: 'Atrasadas', cls: 'late', f: e => e.date < tk },
+      { label: 'Esta semana', f: e => e.date >= tk && diffDays(tk, e.date) <= 7 },
+      { label: 'Este mes', f: e => diffDays(tk, e.date) > 7 && diffDays(tk, e.date) <= 31 },
+      { label: 'Más adelante', f: e => diffDays(tk, e.date) > 31 },
+    ];
+    for (const g of groups) {
+      const list = pending.filter(g.f);
+      if (list.length) body += `<div class="group-label ${g.cls || ''}">${g.label} <span>${list.length}</span></div>${list.map(uniRow).join('')}`;
+    }
+    if (!body) body = '<div class="empty"><strong>No tienes entregas pendientes</strong>Añade la próxima con su fecha y hora límite.</div>';
+  } else {
+    body = past.length ? past.map(uniRow).join('') : '<div class="empty">Aquí aparecerán las entregas hechas y los exámenes pasados.</div>';
+  }
+
+  const classes = state.classes.filter(c => c.cat === 'uni');
+  const classList = classes.map(c => `<button class="row" data-cat="uni" data-open="class:${c.id}">
+      <span class="time">${esc(c.start)}–${esc(c.end)}</span><span class="bar"></span>
+      <span class="body"><span class="title">${esc(c.title)}</span>
+        <span class="meta"><span>${esc(c.days.slice().sort().map(i => DAY_SHORT[i]).join(', '))}</span>${c.place ? `<span>· ${esc(c.place)}</span>` : ''}</span></span>
+    </button>`).join('');
+
+  const entregas = pending.filter(e => e.type === 'entrega').length;
+  view.innerHTML = `
+    <div class="view-head">
+      <div><div class="eyebrow">Universidad</div><h1>${entregas} entrega${entregas === 1 ? '' : 's'} pendiente${entregas === 1 ? '' : 's'}</h1></div>
+      <div class="chips"><button class="btn small" data-action="new-uni-exam">${ICON.plus} Examen</button><button class="btn small primary" data-action="new-uni-entrega">${ICON.plus} Entrega</button></div>
+    </div>
+    <div class="grid-2">
+      <section class="card">
+        <div class="toolbar" style="margin-bottom:8px">
+          <h2>Entregas y exámenes</h2>
+          <div class="chips">
+            <button class="chip ${status === 'pending' ? 'on' : ''}" data-unistatus="pending">Pendientes</button>
+            <button class="chip ${status === 'done' ? 'on' : ''}" data-unistatus="done">Hechas</button>
+          </div>
+        </div>
+        ${body}
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>Clases de la uni</h2><button class="btn small" data-action="new-uni-class">${ICON.plus} Clase</button></div>
+        <div class="list">${classList || '<div class="empty">Añade tu horario para verlo aquí y en el calendario.</div>'}</div>
+      </section>
+    </div>`;
+}
+
 function renderMaster() {
   const m = state.master;
   const tk = todayKey();
@@ -740,25 +860,46 @@ function openClassForm(c, preset = {}) {
 
 function openEventForm(ev, preset = {}) {
   const isNew = !ev;
-  ev = ev || { title: '', cat: preset.cat || 'uni', type: preset.type || 'entrega', date: preset.date || todayKey(), start: preset.start || '', end: preset.end || '', notes: '' };
+  ev = ev || { title: '', cat: preset.cat || 'uni', type: preset.type || 'entrega', date: preset.date || todayKey(), start: preset.start || '', end: preset.end || '', notes: '', subject: '', done: false };
+  // En las entregas solo hay una hora: la hora límite (se guarda en «start»).
+  const deadline = ev.start || ev.end || '';
   openModal({
     title: isNew ? 'Nueva entrega o evento' : 'Editar',
     body: `
       ${segSimple('Tipo', 'type', EVENT_TYPES, ev.type)}
       ${field('Título', `<input type="text" name="title" value="${esc(ev.title)}" placeholder="p. ej. Entrega láminas Proyectos" required>`)}
       ${segCats('cat', ev.cat)}
-      ${field('Fecha', `<input type="date" name="date" value="${esc(ev.date)}" required>`)}
-      <div class="field-row">${field('Hora (opcional)', `<input type="time" name="start" value="${esc(ev.start)}">`)}${field('Hasta (opcional)', `<input type="time" name="end" value="${esc(ev.end)}">`)}</div>
+      ${field('Asignatura (opcional)', `<input type="text" name="subject" value="${esc(ev.subject || '')}" placeholder="p. ej. Proyectos III">`)}
+      <div class="field-row">${field('Fecha', `<input type="date" name="date" value="${esc(ev.date)}" required>`)}
+        <div data-when="entrega">${field('Hora límite (opcional)', `<input type="time" name="deadline" value="${esc(deadline)}">`)}</div></div>
+      <div class="field-row" data-when="other">${field('Hora (opcional)', `<input type="time" name="start" value="${esc(ev.start)}">`)}${field('Hasta (opcional)', `<input type="time" name="end" value="${esc(ev.end)}">`)}</div>
+      ${!isNew ? `<label data-when="entrega" style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" name="done" ${ev.done ? 'checked' : ''}> Ya está entregada</label>` : ''}
       ${field('Notas', `<textarea name="notes" placeholder="Qué hay que entregar, formato, dónde…">${esc(ev.notes)}</textarea>`)}`,
     onSave: d => {
-      if (d.end && !d.start) d.end = '';
-      if (d.end && toMin(d.end) <= toMin(d.start)) { toast('La hora de fin debe ser posterior al inicio'); return false; }
-      const obj = { id: ev.id || uid(), title: d.title, cat: d.cat, type: d.type, date: d.date, start: d.start, end: d.end, notes: d.notes };
+      let start = d.start, end = d.end;
+      if (d.type === 'entrega') { start = d.deadline; end = ''; }
+      else {
+        if (end && !start) { toast('Pon también la hora de inicio'); return false; }
+        if (end && toMin(end) <= toMin(start)) { toast('La hora de fin debe ser posterior al inicio'); return false; }
+      }
+      const obj = { id: ev.id || uid(), title: d.title, cat: d.cat, type: d.type, date: d.date, start, end, notes: d.notes,
+        subject: d.subject || '', done: d.type === 'entrega' ? !!d.done : false };
       if (isNew) state.events.push(obj); else Object.assign(ev, obj);
       toast(isNew ? 'Añadido al calendario' : 'Guardado');
     },
     onDelete: isNew ? null : () => { state.events = state.events.filter(x => x.id !== ev.id); },
   });
+  // Muestra «Hora límite» para entregas y «Hora / Hasta» para exámenes y eventos.
+  const syncType = () => {
+    const t = (modalForm.querySelector('input[name="type"]:checked') || {}).value;
+    modalForm.querySelectorAll('[data-when]').forEach(el => {
+      const show = el.dataset.when === 'entrega' ? t === 'entrega' : t !== 'entrega';
+      el.hidden = !show;
+      el.querySelectorAll('input').forEach(i => { i.disabled = !show; });
+    });
+  };
+  modalForm.querySelectorAll('input[name="type"]').forEach(r => r.addEventListener('change', syncType));
+  syncType();
 }
 
 function openTaskForm(t, preset = {}) {
@@ -882,6 +1023,7 @@ function openMenu() {
     body: `
       <div class="field"><span>Tema</span><div class="chips">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([v, n]) =>
         `<button type="button" class="chip ${ui.theme === v ? 'on' : ''}" data-theme-set="${v}">${n}</button>`).join('')}</div></div>
+      <div class="field"><span>Fondo</span><div id="bgBox" style="display:grid;gap:8px">${bgFieldHTML()}</div></div>
       ${FB_CONFIG ? `<div class="field"><span>Sincronizar móvil y ordenador</span><div id="syncBox">${syncBoxHTML()}</div></div>` : ''}
       <div class="field"><span>Copia de seguridad</span>
         <p class="hint">${FB_CONFIG ? 'Una copia en archivo, por si acaso.' : 'Los datos se guardan solo en este dispositivo y navegador. Exporta una copia de vez en cuando, o para pasarlos a otro dispositivo.'}</p>
@@ -951,6 +1093,16 @@ document.addEventListener('click', e => {
     if (task.done) toast('Tarea hecha ✓', () => { const x = state.tasks.find(y => y.id === tid); if (x) { x.done = false; x.doneAt = null; } });
     return;
   }
+  const te = t.closest('[data-toggle-ev]');
+  if (te) {
+    const ev = state.events.find(x => x.id === te.dataset.toggleEv);
+    if (!ev) return;
+    ev.done = !ev.done;
+    save(); render();
+    const eid = ev.id;
+    if (ev.done) toast('Entregada ✓', () => { const x = state.events.find(y => y.id === eid); if (x) x.done = false; });
+    return;
+  }
   const tm = t.closest('[data-toggle-ms]');
   if (tm) {
     const [pid, mid] = tm.dataset.toggleMs.split(':');
@@ -989,9 +1141,17 @@ document.addEventListener('click', e => {
   }
   const sd = t.closest('[data-sel]'); if (sd) { ui.selDay = sd.dataset.sel; return render(); }
   const st = t.closest('[data-status]'); if (st) { ui.taskStatus = st.dataset.status; saveUI(); return render(); }
+  const us = t.closest('[data-unistatus]'); if (us) { ui.uniStatus = us.dataset.unistatus; saveUI(); return render(); }
   const tc = t.closest('[data-tcat]'); if (tc) { ui.taskCat = tc.dataset.tcat; saveUI(); return render(); }
   const th = t.closest('[data-theme-set]');
   if (th) { ui.theme = th.dataset.themeSet; saveUI(); applyTheme(); modalForm.querySelectorAll('[data-theme-set]').forEach(b => b.classList.toggle('on', b === th)); return; }
+
+  const bs = t.closest('[data-bg-set]');
+  if (bs) {
+    const v = bs.dataset.bgSet;
+    if (v === 'image' && !getBgImage()) { $('#bgFile').click(); return; }
+    ui.bg = v; saveUI(); applyBg(); refreshBgField(); return;
+  }
 
   const col = t.closest('[data-col]');
   if (col && !t.closest('.ev')) {
@@ -1007,6 +1167,9 @@ document.addEventListener('click', e => {
   if (a === 'new-class') openClassForm();
   else if (a === 'new-event') openEventForm(null, { date: ui.selDay });
   else if (a === 'new-on-day') openChooser({ date: ui.selDay });
+  else if (a === 'new-uni-entrega') openEventForm(null, { cat: 'uni', type: 'entrega' });
+  else if (a === 'new-uni-exam') openEventForm(null, { cat: 'uni', type: 'examen' });
+  else if (a === 'new-uni-class') openClassForm(null, { cat: 'uni' });
   else if (a === 'new-project') openProjectForm();
   else if (a === 'new-note') openNoteForm();
   else if (a === 'new-link') openLinkForm();
@@ -1022,6 +1185,11 @@ document.addEventListener('click', e => {
   else if (a === 'sign-in') { if (sync.api) sync.api.signIn(); }
   else if (a === 'sign-out') {
     if (sync.api && confirm('¿Cerrar sesión? Los datos se quedan en este dispositivo, pero dejarán de sincronizarse.')) sync.api.signOut();
+  }
+  else if (a === 'bg-change') $('#bgFile').click();
+  else if (a === 'bg-remove') {
+    try { localStorage.removeItem(BG_IMG_KEY); } catch (e) {}
+    ui.bg = 'grid'; saveUI(); applyBg(); refreshBgField(); toast('Imagen quitada');
   }
   else if (a === 'export') exportData();
   else if (a === 'import') $('#importFile').click();
@@ -1071,10 +1239,22 @@ $('#importFile').addEventListener('change', async e => {
   } catch (err) { toast('Ese archivo no es una copia válida de Taller'); }
 });
 
+$('#bgFile').addEventListener('change', async e => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file) return;
+  try {
+    const data = await imageToDataUrl(file);
+    try { localStorage.setItem(BG_IMG_KEY, data); }
+    catch (err) { toast('La imagen es demasiado grande para guardarla'); return; }
+    ui.bg = 'image'; saveUI(); applyBg(); refreshBgField(); toast('Fondo cambiado');
+  } catch (err) { toast('No se ha podido abrir esa imagen'); }
+});
+
 $('#menuBtn').addEventListener('click', openMenu);
 $('#syncBtn').addEventListener('click', openMenu);
 $('#fab').addEventListener('click', () => {
   if (ui.view === 'tareas') return openTaskForm(null, { cat: ui.taskCat !== 'all' ? ui.taskCat : undefined });
+  if (ui.view === 'uni') return openEventForm(null, { cat: 'uni', type: 'entrega' });
   openChooser(ui.view === 'calendario' ? { date: ui.selDay } : {});
 });
 
@@ -1083,6 +1263,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && !m
 setInterval(() => { if (!document.hidden && !modal.open && (ui.view === 'hoy' || ui.view === 'calendario')) render(); }, 60000);
 
 applyTheme();
+applyBg();
 render();
 syncStatusChanged(sync.status, null);
 startSync();
