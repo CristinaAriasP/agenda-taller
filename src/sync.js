@@ -8,12 +8,19 @@
 import { initializeApp } from 'firebase/app';
 import {
   getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect,
-  getRedirectResult, signOut, signInWithCredential, connectAuthEmulator, browserLocalPersistence, setPersistence,
+  getRedirectResult, signOut, signInWithCredential, deleteUser, reauthenticateWithPopup, connectAuthEmulator, browserLocalPersistence, setPersistence,
 } from 'firebase/auth';
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager, memoryLocalCache,
   collection, doc, onSnapshot, writeBatch, getDocs, getDocsFromServer, serverTimestamp, connectFirestoreEmulator,
 } from 'firebase/firestore';
+
+// JSON con las claves ordenadas, para comparar datos sin depender del orden de los campos
+function stable(v) {
+  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  if (v && typeof v === 'object') return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+  return JSON.stringify(v ?? null);
+}
 
 const COLS = ['classes', 'events', 'tasks'];
 const MCOLS = ['projects', 'notes', 'links'];
@@ -88,11 +95,11 @@ export function start(host) {
     const cur = flatten(state);
     const ops = [];
     for (const [key, v] of cur) {
-      const json = JSON.stringify(v.data);
+      const json = stable(clean(v.data));
       if (synced.get(key) !== json) ops.push({ key, ...v });
     }
     for (const key of synced.keys()) if (!cur.has(key)) ops.push({ key, del: true });
-    synced = new Map([...cur].map(([k, v]) => [k, JSON.stringify(v.data)]));
+    synced = new Map([...cur].map(([k, v]) => [k, stable(clean(v.data))]));
     if (ops.length) commitOps(ops);
   }
 
@@ -131,7 +138,7 @@ export function start(host) {
     unsub = onSnapshot(itemsRef(), { includeMetadataChanges: true }, snap => {
       const changed = snap.docChanges().length > 0;
       if (first || changed) {
-        synced = new Map(snap.docs.map(d => [d.id, JSON.stringify(d.data().data)]));
+        synced = new Map(snap.docs.map(d => [d.id, stable(d.data().data)]));
         ready = true;
         host.replaceState(build(snap.docs));
         first = false;
@@ -184,7 +191,35 @@ export function start(host) {
     await signOut(auth);
   }
 
-  return { push, signIn, signOut: logOut, getStatus: () => status, getUser: () => user };
+  // Borra todos los documentos del usuario y después su cuenta de Firebase.
+  async function deleteAccount() {
+    if (!user) return false;
+    try {
+      const snap = await getDocsFromServer(itemsRef());
+      for (let i = 0; i < snap.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+      disconnect();
+      try { await deleteUser(user); }
+      catch (err) {
+        if (err.code !== 'auth/requires-recent-login') throw err;
+        await reauthenticateWithPopup(user, new GoogleAuthProvider());
+        await deleteUser(auth.currentUser);
+      }
+      try { localStorage.removeItem(UID_KEY); } catch (e) {}
+      return true;
+    } catch (err) {
+      console.error('[Taller] delete', err);
+      host.onError(err && err.code === 'auth/network-request-failed' || !navigator.onLine
+        ? 'Necesitas conexión a internet para eliminar la cuenta.'
+        : 'No se ha podido eliminar la cuenta. Inténtalo de nuevo.');
+      return false;
+    }
+  }
+
+  return { push, signIn, signOut: logOut, deleteAccount, getStatus: () => status, getUser: () => user };
 }
 
 function describe(err) {

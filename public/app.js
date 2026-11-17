@@ -121,13 +121,66 @@ function load() {
   } catch (e) { /* datos corruptos o almacenamiento bloqueado */ }
   return demoState();
 }
+/* ---------------- Validación y limpieza de datos ----------------
+ * Todo lo que entra en la app (formularios, copias importadas y datos de la nube)
+ * pasa por normalize(): solo se quedan los campos conocidos, con su tipo y tamaño. */
+const LIMIT = { title: 150, text: 5000, items: 3000 };
+const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const clean = {
+  str: (v, max = LIMIT.title) => String(v ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim().slice(0, max),
+  id: v => (typeof v === 'string' && ID_RE.test(v) ? v : uid()),
+  date: v => (typeof v === 'string' && DATE_RE.test(v) && !isNaN(parseKey(v)) ? v : ''),
+  time: v => (typeof v === 'string' && TIME_RE.test(v) ? v : ''),
+  oneOf: (v, list, def) => (list.includes(v) ? v : def),
+  bool: v => v === true,
+  list: (v, fn) => (Array.isArray(v) ? v.slice(0, LIMIT.items).map(fn).filter(Boolean) : []),
+};
+const CAT_IDS = CATS.map(c => c.id);
+const sanitize = {
+  class: c => c && typeof c === 'object' && {
+    id: clean.id(c.id), title: clean.str(c.title), cat: clean.oneOf(c.cat, CAT_IDS, 'uni'),
+    days: [...new Set(Array.isArray(c.days) ? c.days.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6) : [])],
+    start: clean.time(c.start) || '09:00', end: clean.time(c.end) || '10:00', place: clean.str(c.place),
+    from: clean.date(c.from), until: clean.date(c.until),
+  },
+  event: e => e && typeof e === 'object' && clean.date(e.date) && {
+    id: clean.id(e.id), title: clean.str(e.title), cat: clean.oneOf(e.cat, CAT_IDS, 'uni'),
+    type: clean.oneOf(e.type, EVENT_TYPES.map(t => t.id), 'evento'), date: clean.date(e.date),
+    start: clean.time(e.start), end: clean.time(e.end), notes: clean.str(e.notes, LIMIT.text),
+    subject: clean.str(e.subject), done: clean.bool(e.done),
+  },
+  task: t => t && typeof t === 'object' && {
+    id: clean.id(t.id), title: clean.str(t.title), cat: clean.oneOf(t.cat, CAT_IDS, 'personal'),
+    kind: clean.oneOf(t.kind, TASK_KINDS.map(k => k.id), 'tarea'), due: clean.date(t.due),
+    priority: t.priority == 1 ? 1 : 0, notes: clean.str(t.notes, LIMIT.text), done: clean.bool(t.done),
+    doneAt: Number.isFinite(t.doneAt) ? t.doneAt : null,
+  },
+  milestone: m => m && typeof m === 'object' && { id: clean.id(m.id), title: clean.str(m.title), date: clean.date(m.date), done: clean.bool(m.done) },
+  project: p => p && typeof p === 'object' && {
+    id: clean.id(p.id), title: clean.str(p.title), due: clean.date(p.due), desc: clean.str(p.desc, LIMIT.text),
+    milestones: clean.list(p.milestones, sanitize.milestone),
+  },
+  note: n => n && typeof n === 'object' && { id: clean.id(n.id), title: clean.str(n.title), body: clean.str(n.body, LIMIT.text), pinned: clean.bool(n.pinned) },
+  link: l => l && typeof l === 'object' && clean.str(l.url, 2000) && { id: clean.id(l.id), title: clean.str(l.title), url: safeUrl(clean.str(l.url, 2000)) },
+};
 function normalize(s) {
-  const base = emptyState();
-  const out = { ...base, ...s, master: { ...base.master, ...(s.master || {}) } };
-  for (const key of ['classes', 'events', 'tasks']) if (!Array.isArray(out[key])) out[key] = [];
-  for (const key of ['projects', 'notes', 'links']) if (!Array.isArray(out.master[key])) out.master[key] = [];
-  out.master.projects.forEach(p => { if (!Array.isArray(p.milestones)) p.milestones = []; });
-  return out;
+  s = s && typeof s === 'object' ? s : {};
+  const m = s.master && typeof s.master === 'object' ? s.master : {};
+  return {
+    version: 1,
+    demo: clean.bool(s.demo),
+    classes: clean.list(s.classes, sanitize.class),
+    events: clean.list(s.events, sanitize.event),
+    tasks: clean.list(s.tasks, sanitize.task),
+    master: {
+      name: clean.str(m.name) || 'Mi máster',
+      projects: clean.list(m.projects, sanitize.project),
+      notes: clean.list(m.notes, sanitize.note),
+      links: clean.list(m.links, sanitize.link),
+    },
+  };
 }
 let state = load();
 function saveLocal() {
@@ -135,6 +188,7 @@ function saveLocal() {
   catch (e) { toast('No se ha podido guardar en este navegador'); }
 }
 function save() {
+  state = { ...normalize(state), demo: state.demo };
   saveLocal();
   if (sync.api) sync.api.push(state);
 }
@@ -179,12 +233,13 @@ function syncStatusChanged(st, user) {
 }
 function syncBoxHTML() {
   const st = sync.status;
-  if (st === 'signedout') return `<p class="hint">Inicia sesión con Google para tener los mismos datos en el móvil y en el ordenador. Lo que ya tengas aquí se sube a tu cuenta.</p>
+  if (st === 'signedout') return `<p class="hint">Inicia sesión con Google para tener los mismos datos en el móvil y en el ordenador. Lo que ya tengas aquí se sube a tu cuenta. Más información en «Privacidad y datos».</p>
     <div class="menu-list"><button type="button" class="btn primary" data-action="sign-in">${GOOGLE_G} Iniciar sesión con Google</button></div>`;
   if (st === 'loading' || st === 'unavailable') return `<p class="hint">${SYNC_LABEL[st]}</p>`;
   const who = sync.user ? esc(sync.user.email || sync.user.displayName || '') : '';
   return `<p class="hint sync-line"><i class="sync-dot" data-state="${st}"></i>${esc(SYNC_LABEL[st] || '')}${who ? ` · <b>${who}</b>` : ''}</p>
-    <div class="menu-list"><button type="button" class="btn" data-action="sign-out">Cerrar sesión</button></div>`;
+    <div class="menu-list"><button type="button" class="btn" data-action="sign-out">Cerrar sesión</button>
+      <button type="button" class="btn danger" data-action="delete-account">Eliminar mi cuenta y mis datos de la nube</button></div>`;
 }
 const GOOGLE_G = '<svg viewBox="0 0 48 48" style="stroke:none"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>';
 
@@ -211,7 +266,13 @@ const saveUI = () => { try { localStorage.setItem(UI_KEY, JSON.stringify({ view:
 /* ---------------- Fondo de la página ---------------- */
 // La imagen propia se guarda solo en este dispositivo (no se sincroniza).
 const BG_IMG_KEY = 'taller.bgImage';
-function getBgImage() { try { return localStorage.getItem(BG_IMG_KEY); } catch (e) { return null; } }
+function getBgImage() {
+  try {
+    const v = localStorage.getItem(BG_IMG_KEY);
+    // Solo se acepta una imagen generada por la propia app (data:image/... en base64)
+    return v && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(v) ? v : null;
+  } catch (e) { return null; }
+}
 function applyBg() {
   const img = ui.bg === 'image' ? getBgImage() : null;
   const mode = ui.bg === 'image' && !img ? 'grid' : (['grid', 'plain', 'image'].includes(ui.bg) ? ui.bg : 'grid');
@@ -348,7 +409,7 @@ function taskRow(t) {
   }
   return `<div class="task ${t.done ? 'done' : ''}" data-cat="${t.cat}">
     <button class="check ${t.done ? 'on' : ''}" data-toggle-task="${t.id}" aria-label="${t.done ? 'Marcar como pendiente' : 'Marcar como hecha'}">${ICON.check}</button>
-    <div class="body" data-open="task:${t.id}">
+    <div class="body" data-open="task:${t.id}" role="button" tabindex="0" aria-label="Editar tarea: ${esc(t.title)}">
       <div class="title">${t.priority ? '<span class="prio">!</span> ' : ''}${esc(t.title)}</div>
       <div class="meta"><span class="tag">${esc(CAT_NAME[t.cat])}</span><span>${esc(KIND_NAME[t.kind] || 'Tarea')}</span>${due ? '<span>·</span>' + due : ''}</div>
     </div>
@@ -366,6 +427,7 @@ function render() {
   });
   const views = { hoy: renderHoy, calendario: renderCal, tareas: renderTasks, uni: renderUni, master: renderMaster };
   (views[ui.view] || renderHoy)();
+  limitInputs(view);
 }
 
 function renderHoy() {
@@ -780,7 +842,12 @@ function renderMaster() {
     <section class="card">${links ? `<div class="links">${links}</div>` : '<div class="empty">Campus virtual, drive del grupo, bibliografía…</div>'}</section>`;
 }
 
-const safeUrl = u => /^(https?:|mailto:)/i.test(u || '') ? u : 'https://' + String(u || '').replace(/^\/+/, '');
+// Solo se permiten enlaces web o de correo; cualquier otro esquema (javascript:, data:…) se convierte en https://
+function safeUrl(u) {
+  u = String(u || '').trim();
+  if (/^(https?:|mailto:)/i.test(u)) return u;
+  return 'https://' + u.replace(/^[a-z][a-z0-9+.-]*:/i, '').replace(/^\/+/, '');
+}
 
 /* ---------------- Modal ---------------- */
 const modal = $('#modal');
@@ -797,9 +864,16 @@ function openModal({ title, body, onSave, onDelete, saveLabel = 'Guardar', noFoo
       <span class="spacer"></span>
       <button type="button" class="btn" data-close>Cancelar</button>
       <button type="submit" class="btn primary">${esc(saveLabel)}</button></div>`}`;
+  limitInputs(modalForm);
   modal.showModal();
   const first = modalForm.querySelector('.modal-body input[type="text"], .modal-body textarea');
   if (first && !('ontouchstart' in window)) first.focus();
+}
+// Límite de caracteres en todos los campos de texto (coincide con lo que acepta normalize)
+function limitInputs(root) {
+  root.querySelectorAll('input[type="text"]:not([maxlength])').forEach(i => { i.maxLength = LIMIT.title; });
+  root.querySelectorAll('input[type="url"]:not([maxlength])').forEach(i => { i.maxLength = 2000; });
+  root.querySelectorAll('textarea:not([maxlength])').forEach(i => { i.maxLength = LIMIT.text; });
 }
 function closeModal() { modal.close(); modalHandlers = {}; setTimeout(applyPending, 0); }
 modal.addEventListener('close', () => setTimeout(applyPending, 0));
@@ -1033,7 +1107,37 @@ function openMenu() {
         </div></div>
       <div class="field"><span>Datos</span><div class="menu-list">
         ${state.demo ? '<button type="button" class="btn" data-action="clear-demo">Quitar datos de ejemplo</button>' : '<button type="button" class="btn" data-action="load-demo">Ver datos de ejemplo</button>'}
-        <button type="button" class="btn danger" data-action="wipe">Borrar todo</button></div></div>`,
+        <button type="button" class="btn danger" data-action="wipe">Borrar todo</button></div></div>
+      <div class="field"><span>Información</span><div class="menu-list">
+        <button type="button" class="btn" data-action="privacy">Privacidad y datos</button></div></div>`,
+  });
+}
+
+/* ---------------- Privacidad ----------------
+ * BORRADOR: este texto no es definitivo. Debe revisarlo quien sea responsable
+ * de la app (y, si se quiere, una gestoría o un abogado) antes de darlo por bueno. */
+const PRIVACY_CONTACT = 'la persona que te ha pasado esta app'; // TODO: poner aquí un correo de contacto
+function openPrivacy() {
+  openModal({
+    title: 'Privacidad y datos',
+    noFoot: true,
+    body: `<div class="legal">
+      <p class="hint"><b>Borrador pendiente de revisión.</b> Texto orientativo, no definitivo.</p>
+      <h3>Qué es Taller</h3>
+      <p>Una agenda personal de uso privado entre amigos. No tiene publicidad, no vende nada y no usa analítica ni rastreadores.</p>
+      <h3>Qué datos se guardan</h3>
+      <ul>
+        <li><b>Lo que escribes en la app</b> (clases, entregas, tareas, notas, enlaces): para mostrártelo y, si inicias sesión, sincronizarlo entre tus dispositivos.</li>
+        <li><b>Si inicias sesión con Google</b>: tu correo, tu nombre y un identificador interno de cuenta, solo para saber qué datos son tuyos. No se guarda ninguna contraseña: el acceso lo gestiona Google.</li>
+        <li><b>En tu dispositivo</b>: una copia de tus datos, tus preferencias (tema, vista, fondo) y la sesión, en el almacenamiento del navegador. Son necesarios para que la app funcione; no se usan cookies de análisis ni de publicidad.</li>
+      </ul>
+      <h3>Dónde se guardan</h3>
+      <p>Sin iniciar sesión, solo en tu dispositivo. Con sesión, también en Google Firebase (Firestore, servidores en la Unión Europea, región europe-west1). Cada cuenta solo puede leer y modificar sus propios datos.</p>
+      <h3>Cuánto tiempo y cómo borrarlos</h3>
+      <p>Mientras uses la app. Puedes borrarlo todo cuando quieras desde Ajustes: «Borrar todo» o «Eliminar mi cuenta y mis datos de la nube». También puedes descargar una copia con «Exportar copia».</p>
+      <h3>Contacto</h3>
+      <p>Para cualquier duda sobre tus datos, escribe a ${esc(PRIVACY_CONTACT)}.</p>
+    </div>`,
   });
 }
 
@@ -1191,6 +1295,15 @@ document.addEventListener('click', e => {
     try { localStorage.removeItem(BG_IMG_KEY); } catch (e) {}
     ui.bg = 'grid'; saveUI(); applyBg(); refreshBgField(); toast('Imagen quitada');
   }
+  else if (a === 'delete-account') {
+    if (sync.api && confirm('Se borrarán todos tus datos de la nube y tu cuenta de Taller. Los datos de este dispositivo también se borrarán. Esto no se puede deshacer. ¿Continuar?')) {
+      sync.api.deleteAccount().then(ok => {
+        if (!ok) return;
+        state = emptyState(); saveLocal(); closeModal(); render(); toast('Cuenta y datos eliminados');
+      });
+    }
+  }
+  else if (a === 'privacy') openPrivacy();
   else if (a === 'export') exportData();
   else if (a === 'import') $('#importFile').click();
   else if (a === 'clear-demo') {
@@ -1207,6 +1320,12 @@ document.addEventListener('click', e => {
   else if (a === 'wipe') {
     if (confirm(sync.user ? '¿Borrar TODOS los datos? Se borrarán también en tus otros dispositivos sincronizados.' : '¿Borrar TODOS los datos de la app en este dispositivo?')) { state = emptyState(); save(); closeModal(); render(); toast('Datos borrados'); }
   }
+});
+
+// Teclado: Enter o Espacio activan los elementos con role="button" que no son <button>
+document.addEventListener('keydown', e => {
+  const el = e.target.closest && e.target.closest('[role="button"][data-open]');
+  if (el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); el.click(); }
 });
 
 document.addEventListener('submit', e => {

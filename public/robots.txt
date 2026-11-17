@@ -1,0 +1,4 @@
+# Taller es una agenda privada: no tiene contenido público que indexar.
+# No se bloquea el rastreo para que los buscadores puedan leer la etiqueta "noindex" de la página.
+User-agent: *
+Allow: /
